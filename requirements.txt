@@ -3,3 +3,4 @@ uvicorn[standard]==0.52.1
 ruff
 pytest
 pytest-cov
+httpx2
