@@ -1,3 +1,5 @@
+import os
+
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 
@@ -37,6 +39,17 @@ def health() -> dict[str, str]:
     """Endpoint usado por pessoas, containers e pipelines para verificar a API."""
 
     return {"status": "ok", "version": app.version}
+
+
+@app.get("/version")
+def version() -> dict[str, str]:
+    """Informa a versão da aplicação e o commit implantado.
+
+    A pipeline de deploy define APP_COMMIT com o SHA do commit ao iniciar o
+    container na EC2, ligando o que está no ar ao código no GitHub.
+    """
+
+    return {"version": app.version, "commit": os.getenv("APP_COMMIT", "local")}
 
 
 @app.get("/tasks", response_model=list[Task])

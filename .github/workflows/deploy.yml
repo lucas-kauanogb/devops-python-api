@@ -1,0 +1,118 @@
+name: Deploy na EC2
+
+# Executa a cada atualização da main (merge de Pull Request) ou manualmente.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Nunca dois deploys ao mesmo tempo na mesma instância; o segundo espera o primeiro.
+concurrency:
+  group: deploy-producao
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+
+jobs:
+  # 1. Testes: reutiliza a mesma CI dos Pull Requests.
+  #    Se os testes falharem, nenhum job seguinte é executado.
+  tests:
+    name: Testes automatizados
+    uses: ./.github/workflows/ci.yml
+
+  # 2. Build da imagem e publicação no Amazon ECR, com tag = SHA do commit.
+  build-and-push:
+    name: Build e publicação no ECR
+    needs: tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Obter o código
+        uses: actions/checkout@v6
+
+      - name: Configurar credenciais da AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login no Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Construir a imagem
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          docker build \
+            --tag "$REGISTRY/$ECR_REPOSITORY:$GITHUB_SHA" \
+            --tag "$REGISTRY/$ECR_REPOSITORY:latest" \
+            .
+
+      - name: Enviar a imagem ao ECR
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          docker push "$REGISTRY/$ECR_REPOSITORY:$GITHUB_SHA"
+          docker push "$REGISTRY/$ECR_REPOSITORY:latest"
+          echo "### Imagem publicada" >> "$GITHUB_STEP_SUMMARY"
+          echo "Repositório \`$ECR_REPOSITORY\`, tag \`$GITHUB_SHA\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # 3. Deploy: conexão SSH com a EC2, pull da imagem do commit e troca do container.
+  deploy:
+    name: Deploy na EC2
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment:
+      name: producao
+      url: http://${{ vars.EC2_HOST }}/version
+
+    steps:
+      - name: Obter o código
+        uses: actions/checkout@v6
+
+      - name: Preparar a chave SSH
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_HOST: ${{ vars.EC2_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/ec2.pem
+          chmod 600 ~/.ssh/ec2.pem
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+
+      - name: Executar o deploy na instância
+        env:
+          EC2_HOST: ${{ vars.EC2_HOST }}
+          EC2_USER: ${{ vars.EC2_USER }}
+        run: |
+          ssh -i ~/.ssh/ec2.pem "$EC2_USER@$EC2_HOST" \
+            'bash -s' -- "$AWS_REGION" "$ECR_REPOSITORY" "$GITHUB_SHA" \
+            < scripts/deploy-ec2.sh
+
+      - name: Verificar a API publicada
+        env:
+          EC2_HOST: ${{ vars.EC2_HOST }}
+        run: |
+          for attempt in {1..10}; do
+            if body=$(curl --fail --silent "http://$EC2_HOST/version"); then
+              echo "$body"
+              echo "### Deploy concluído" >> "$GITHUB_STEP_SUMMARY"
+              echo "\`GET http://$EC2_HOST/version\` → \`$body\`" >> "$GITHUB_STEP_SUMMARY"
+              echo "$body" | grep --quiet "$GITHUB_SHA"
+              exit 0
+            fi
+            echo "Tentativa ${attempt}: API ainda não respondeu"
+            sleep 3
+          done
+          exit 1
+
+      - name: Remover a chave SSH
+        if: always()
+        run: rm -f ~/.ssh/ec2.pem
