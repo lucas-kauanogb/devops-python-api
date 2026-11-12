@@ -24,7 +24,6 @@ class Task(TaskCreate):
 tasks: list[Task] = []
 
 
-
 @app.get("/")
 def root() -> dict[str, str]:
     return {
