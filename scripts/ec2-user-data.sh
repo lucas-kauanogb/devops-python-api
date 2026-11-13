@@ -1,14 +1,12 @@
 #!/bin/bash
-# User data para a instância EC2 (Amazon Linux 2023).
-# Cole este conteúdo em "Advanced details > User data" ao criar a instância.
-# Ele roda uma única vez, no primeiro boot, como root.
+# Preparação da instância EC2 Ubuntu (executar uma única vez).
+# Pode ser colado em "Advanced details > User data" ao criar a instância,
+# ou executado via SSH / EC2 Instance Connect com sudo.
 set -euxo pipefail
 
-dnf update -y
-dnf install -y docker
+apt-get update
+apt-get install -y docker.io awscli
 systemctl enable --now docker
 
-# Permite que o ec2-user (usado pelo deploy via SSH) execute docker sem sudo.
-usermod -aG docker ec2-user
-
-# O AWS CLI v2 já vem instalado no Amazon Linux 2023 e usa a IAM Role da instância.
+# Permite que o usuário ubuntu (usado pelo deploy via SSH) execute docker sem sudo.
+usermod -aG docker ubuntu
