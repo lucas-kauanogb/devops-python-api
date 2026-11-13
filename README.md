@@ -10,12 +10,12 @@ Os dados ficam em memória para manter o foco no fluxo DevOps, sem banco de dado
 
 | Recurso | Endereço |
 |---|---|
-| API | `http://<IP_PUBLICO_EC2>/` |
-| Versão implantada | `http://<IP_PUBLICO_EC2>/version` |
-| Saúde | `http://<IP_PUBLICO_EC2>/health` |
-| Documentação Swagger | `http://<IP_PUBLICO_EC2>/docs` |
+| API | <http://54.227.27.246/> |
+| Versão implantada | <http://54.227.27.246/version> |
+| Saúde | <http://54.227.27.246/health> |
+| Documentação Swagger | <http://54.227.27.246/docs> |
 
-> Substitua `<IP_PUBLICO_EC2>` pelo IP ou DNS público da instância.
+> O projeto foi implantado em uma conta **AWS Academy (Learner Lab)**. A instância é desligada ao fim de cada sessão do laboratório e recebe um IP público novo ao ser religada; nesse caso, o endereço acima e a variável `EC2_HOST` precisam ser atualizados.
 
 ## Tecnologias utilizadas
 
@@ -27,9 +27,9 @@ Os dados ficam em memória para manter o foco no fluxo DevOps, sem banco de dado
 | Git + GitHub (branches e Pull Requests) | Versionamento e revisão |
 | GitHub Actions | Pipelines de CI (`ci.yml`) e CD (`deploy.yml`) |
 | Docker | Empacotamento e execução da aplicação |
-| Amazon ECR | Registro privado das imagens |
-| Amazon EC2 (Amazon Linux 2023) | Servidor que executa o container |
-| AWS IAM (usuário + role) | Permissões mínimas, sem credenciais no código |
+| Amazon ECR — repositório `devops-ceub/lucas` | Registro privado das imagens |
+| Amazon EC2 (Ubuntu, `t3.micro`) — instância `vm-deploy` | Servidor que executa o container |
+| AWS IAM — role `LabRole` (via `LabInstanceProfile`) | Permissão da EC2 para baixar imagens do ECR, sem chaves no servidor |
 
 ## Estrutura do repositório
 
@@ -49,7 +49,7 @@ Os dados ficam em memória para manter o foco no fluxo DevOps, sem banco de dado
 │   └── evidencias/            # capturas de tela da entrega
 ├── scripts/
 │   ├── deploy-ec2.sh          # executado na EC2 pela pipeline de deploy
-│   └── ec2-user-data.sh       # instala o Docker no primeiro boot da EC2
+│   └── ec2-user-data.sh       # prepara a EC2 Ubuntu (Docker + AWS CLI)
 ├── tests/test_api.py          # testes automatizados
 ├── .dockerignore
 ├── .python-version
@@ -139,7 +139,7 @@ tests ──▶ build-and-push ──▶ deploy
 ```
 
 1. **`tests`** — reutiliza o `ci.yml` (`workflow_call`): exatamente os mesmos testes do PR. **Se falharem, os jobs seguintes não executam.**
-2. **`build-and-push`** — autentica na AWS com as credenciais dos GitHub Secrets, faz login no ECR, constrói a imagem e a publica com duas tags: o **SHA do commit** (imutável, rastreável) e `latest`.
+2. **`build-and-push`** — autentica na AWS com as credenciais temporárias do AWS Academy guardadas em GitHub Secrets, faz login no ECR, constrói a imagem e a publica com duas tags: o **SHA do commit** (imutável, rastreável) e `latest`.
 3. **`deploy`** — abre uma conexão SSH com a EC2 usando a chave guardada em Secret e executa [`scripts/deploy-ec2.sh`](scripts/deploy-ec2.sh), que:
    1. autentica o Docker da instância no ECR usando a **IAM Role** da EC2;
    2. baixa a imagem com a tag do commit;
@@ -155,12 +155,12 @@ Nenhum comando manual é executado na instância após cada alteração.
 
 | Onde | Nome | Conteúdo |
 |---|---|---|
-| GitHub Secret | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Usuário IAM com permissão **apenas de push** no repositório ECR |
-| GitHub Secret | `EC2_SSH_KEY` | Chave privada do key pair da EC2 |
-| GitHub Variable | `AWS_REGION`, `ECR_REPOSITORY`, `EC2_HOST`, `EC2_USER` | Configuração não sensível |
-| IAM Role da EC2 | `AmazonEC2ContainerRegistryReadOnly` | Leitura do ECR sem chaves na instância |
+| GitHub Secret | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | Credenciais temporárias da sessão do AWS Academy, usadas para enviar a imagem ao ECR |
+| GitHub Secret | `EC2_SSH_KEY` | Chave privada do key pair da EC2 (`vockey`) |
+| GitHub Variable | `AWS_REGION` = `us-east-1`, `ECR_REPOSITORY` = `devops-ceub/lucas`, `EC2_HOST` = IP da EC2, `EC2_USER` = `ubuntu` | Configuração não sensível |
+| IAM Role da EC2 | `LabRole` (instance profile `LabInstanceProfile`) | Leitura do ECR sem chaves na instância |
 
-Nenhuma senha, token ou chave está versionada no repositório. O passo a passo completo está em [docs/AWS-SETUP.md](docs/AWS-SETUP.md).
+Como a conta AWS Academy não permite criar usuários nem roles no IAM, foram usadas as credenciais temporárias da sessão (que expiram ao fim do laboratório) e a role pré-configurada `LabRole`. Nenhuma senha, token ou chave está versionada no repositório. O passo a passo completo está em [docs/AWS-SETUP.md](docs/AWS-SETUP.md).
 
 ## 5. Arquitetura de implantação
 
@@ -178,7 +178,7 @@ Nenhuma senha, token ou chave está versionada no repositório. O passo a passo 
                                └──────────┬───────────┘                          │ docker pull
                                           │ SSH (chave em Secret)                │ (IAM Role)
                                           │                         ┌────────────▼─────────┐
-                                          └───────────────────────▶ │ EC2 Amazon Linux     │
+                                          └───────────────────────▶ │ EC2 Ubuntu (vm-deploy)│
                                                                     │ container :80→:8000  │
                                                                     └────────────┬─────────┘
                                                                                  │ HTTP :80
@@ -188,37 +188,65 @@ Nenhuma senha, token ou chave está versionada no repositório. O passo a passo 
 ## 6. Como verificar a versão implantada
 
 ```bash
-curl http://<IP_PUBLICO_EC2>/version
-# {"version":"1.0.0","commit":"<sha-do-commit>"}
+curl http://54.227.27.246/version
+# {"version":"1.1.0","commit":"840c6bb8396df863d1a6fa2d03d4c55b31a98639"}
 ```
 
 - `version` é a versão declarada em `app/main.py`.
 - `commit` é o SHA do commit da `main` que gerou a imagem; deve coincidir com o último commit da `main` e com a tag da imagem no ECR.
 
-Também é possível conferir na instância (somente leitura): `docker ps` mostra a imagem `.../devops-python-api:<sha>` em execução.
+Também é possível conferir na instância (somente leitura): `docker ps` mostra a imagem `...dkr.ecr.us-east-1.amazonaws.com/devops-ceub/lucas:<sha>` em execução, com o status `healthy`.
 
 ## 7. Demonstração de atualização automática
 
 | | Versão 1 | Versão 2 |
 |---|---|---|
-| Pull Request | `<link do PR #1>` | `<link do PR #2>` |
-| Commit | `<sha 1>` | `<sha 2>` |
-| `GET /version` | `{"version":"1.0.0", ...}` | `{"version":"1.1.0", ...}` |
+| Pull Request | [#2 — feature/ci-cd-ec2](https://github.com/lucas-kauanogb/devops-python-api/pull/2) | [#3 — feature/versao-1-1](https://github.com/lucas-kauanogb/devops-python-api/pull/3) |
+| Commit implantado | `56f6bc7e0380cc01cece9c87d53f48ce8d556e2d` | `840c6bb8396df863d1a6fa2d03d4c55b31a98639` |
+| Tag da imagem no ECR | `56f6bc7e0380...` | `840c6bb8396d...` |
+| `GET /version` | `{"version":"1.0.0","commit":"56f6bc7..."}` | `{"version":"1.1.0","commit":"840c6bb..."}` |
 
-A versão 2 foi produzida apenas com branch → PR → merge; o deploy na EC2 ocorreu sozinho pela pipeline.
+Fluxo da versão 2: branch `feature/versao-1-1` → alteração da versão e da mensagem de `/` → `pytest` local (8 testes aprovados) → commit e push → PR #3 com a CI aprovada → merge na `main` → pipeline **Deploy na EC2** executada automaticamente → `/version` passou a responder `1.1.0`. Nenhum comando foi executado manualmente na instância para essa atualização.
 
 ## 8. Evidências
 
-| Evidência | Arquivo |
-|---|---|
-| CI executada com sucesso no Pull Request | `docs/evidencias/01-ci-pr.png` |
-| Imagem publicada no ECR com a tag do commit | `docs/evidencias/02-ecr-imagem.png` |
-| Pipeline de deploy concluída | `docs/evidencias/03-deploy-pipeline.png` |
-| Container em execução na EC2 (`docker ps`) | `docs/evidencias/04-ec2-docker-ps.png` |
-| API acessível pelo navegador | `docs/evidencias/05-api-navegador.png` |
-| Versão 1 e versão 2 em `/version` | `docs/evidencias/06-versao-1.png`, `docs/evidencias/07-versao-2.png` |
+### Integração contínua
 
-Execuções das pipelines: aba **Actions** do repositório.
+![CI aprovada no Pull Request](docs/evidencias/01-ci-pr.png)
+
+### Imagem publicada no Amazon ECR
+
+![Imagem no ECR com a tag do commit](docs/evidencias/02-ecr-imagem.png)
+
+### Pipeline de deploy
+
+![Pipeline de deploy concluída](docs/evidencias/03-deploy-pipeline.png)
+
+### Container em execução na EC2
+
+![docker ps na EC2](docs/evidencias/04-ec2-docker-ps.png)
+
+### Aplicação acessível — versão 1
+
+![Versão 1.0.0 no navegador](docs/evidencias/05-versao-1.png)
+
+### Testes locais da versão 2
+
+![pytest local da versão 1.1.0](docs/evidencias/06-testes-locais-v1-1.png)
+
+### Pull Request da versão 2
+
+![PR #3 com a CI aprovada](docs/evidencias/07-pr-versao-1-1.png)
+
+### Deploy automático da versão 2
+
+![Pipeline disparada pelo merge do PR #3](docs/evidencias/08-deploy-versao-1-1.png)
+
+### Aplicação atualizada — versão 2
+
+![Versão 1.1.0 no navegador](docs/evidencias/09-versao-2.png)
+
+Histórico completo das execuções: aba [Actions](https://github.com/lucas-kauanogb/devops-python-api/actions) do repositório.
 
 ## Referências
 

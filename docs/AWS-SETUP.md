@@ -1,151 +1,101 @@
 # Configuração da AWS e do GitHub (etapas 4, 5 e 6)
 
-Este guia cria, pelo Console da AWS, tudo o que o `deploy.yml` precisa. Use **a mesma região** em todos os passos (exemplo: `us-east-1`).
+O projeto foi implantado em uma conta **AWS Academy (Learner Lab)**, região **`us-east-1`**. Esse ambiente não permite criar usuários, políticas ou roles no IAM, então foram usados os recursos que o laboratório já oferece: credenciais temporárias da sessão e a role `LabRole`.
 
-Visão geral do que será criado:
-
-| Recurso | Nome sugerido | Para quê |
+| Recurso | Nome usado | Para quê |
 |---|---|---|
-| Repositório ECR (privado) | `devops-python-api` | Guardar as imagens Docker |
-| Usuário IAM | `github-actions-devops` | Credenciais do GitHub Actions para **enviar** imagens ao ECR |
-| IAM Role | `ec2-ecr-readonly` | Permitir que a EC2 **baixe** imagens do ECR (sem chaves) |
-| Key pair | `devops-python-api-key` | Acesso SSH seguro da pipeline à EC2 |
-| Security group | `devops-python-api-sg` | Liberar portas 22 (SSH) e 80 (HTTP) |
-| Instância EC2 | `devops-python-api` | Executar o container |
+| Repositório ECR (privado) | `devops-ceub/lucas` | Guardar as imagens Docker |
+| Credenciais temporárias do Lab | AWS Details → AWS CLI | GitHub Actions enviar imagens ao ECR |
+| IAM Role da instância | `LabRole` (instance profile `LabInstanceProfile`) | EC2 baixar imagens do ECR sem chaves |
+| Key pair | `vockey` (`labsuser.pem`) | Acesso SSH da pipeline à EC2 |
+| Security group | regras 22 e 80 | Liberar SSH e HTTP |
+| Instância EC2 | `vm-deploy` (Ubuntu, `t3.micro`) | Executar o container |
 
 ---
 
 ## 1. Repositório no Amazon ECR
 
-1. Console → **Elastic Container Registry** → **Create repository**.
-2. Visibility: **Private**. Name: `devops-python-api`.
-3. Deixe o restante no padrão e clique em **Create**.
+Console → **Elastic Container Registry** → **Create repository** → visibilidade **Private**, nome `devops-ceub/lucas`.
 
-## 2. Usuário IAM para o GitHub Actions
-
-O GitHub só precisa **enviar** imagens para esse repositório, então a política é restrita a isso.
-
-1. **IAM → Policies → Create policy → JSON** e cole (troque `REGIAO` e `ID_DA_CONTA`):
-
-   ```json
-   {
-     "Version": "2012-10-17",
-     "Statement": [
-       {
-         "Sid": "LoginNoEcr",
-         "Effect": "Allow",
-         "Action": "ecr:GetAuthorizationToken",
-         "Resource": "*"
-       },
-       {
-         "Sid": "PushNoRepositorio",
-         "Effect": "Allow",
-         "Action": [
-           "ecr:BatchCheckLayerAvailability",
-           "ecr:BatchGetImage",
-           "ecr:CompleteLayerUpload",
-           "ecr:GetDownloadUrlForLayer",
-           "ecr:InitiateLayerUpload",
-           "ecr:PutImage",
-           "ecr:UploadLayerPart"
-         ],
-         "Resource": "arn:aws:ecr:REGIAO:ID_DA_CONTA:repository/devops-python-api"
-       }
-     ]
-   }
-   ```
-
-   Nome da política: `github-actions-ecr-push`.
-
-2. **IAM → Users → Create user** → `github-actions-devops` (sem acesso ao console) → **Attach policies directly** → marque `github-actions-ecr-push`.
-3. Abra o usuário → **Security credentials → Create access key** → caso de uso *Application running outside AWS*.
-4. Copie o **Access key ID** e o **Secret access key**. Eles vão **somente** para os Secrets do GitHub (passo 7), nunca para arquivos do repositório.
-
-## 3. IAM Role da instância EC2
-
-1. **IAM → Roles → Create role**.
-2. Trusted entity: **AWS service** → Use case: **EC2**.
-3. Permissions: marque **`AmazonEC2ContainerRegistryReadOnly`**.
-4. Nome: `ec2-ecr-readonly` → **Create role**.
-
-Com essa role, a instância obtém credenciais temporárias automaticamente e consegue executar `aws ecr get-login-password` e `docker pull`, sem nenhuma chave salva no servidor.
-
-## 4. Key pair (SSH)
-
-1. **EC2 → Key pairs → Create key pair** → nome `devops-python-api-key`, tipo **ED25519** (ou RSA), formato **.pem**.
-2. O arquivo `.pem` é baixado uma única vez. Guarde-o: o conteúdo dele vai para o secret `EC2_SSH_KEY`.
-
-## 5. Security group
-
-**EC2 → Security groups → Create security group** → `devops-python-api-sg`, regras de entrada:
-
-| Tipo | Porta | Origem | Motivo |
-|---|---|---|---|
-| SSH | 22 | `0.0.0.0/0` | Deploy pelos runners do GitHub (IPs variáveis); acesso somente com a chave privada |
-| HTTP | 80 | `0.0.0.0/0` | Acesso público à API |
-
-> O SSH aceita apenas autenticação por chave no Amazon Linux (senha desabilitada). Como os runners do GitHub não têm IP fixo, a porta 22 precisa ficar aberta; por isso a chave privada fica somente nos Secrets.
-
-## 6. Instância EC2
+## 2. Instância EC2
 
 **EC2 → Launch instance**:
 
-- Name: `devops-python-api`
-- AMI: **Amazon Linux 2023**
-- Instance type: `t3.micro` ou `t2.micro` (free tier)
-- Key pair: `devops-python-api-key`
-- Network settings → **Select existing security group** → `devops-python-api-sg`; Auto-assign public IP: **Enable**
-- Advanced details → **IAM instance profile**: `ec2-ecr-readonly`
-- Advanced details → **User data**: cole o conteúdo de [`scripts/ec2-user-data.sh`](../scripts/ec2-user-data.sh) (instala e inicia o Docker)
+- Name: `vm-deploy`
+- AMI: **Ubuntu Server**
+- Instance type: `t3.micro`
+- Key pair: `vockey`
+- Security group com as regras de entrada:
 
-Após alguns minutos, confira (opcional, apenas para validar a instalação):
+  | Tipo | Porta | Origem | Motivo |
+  |---|---|---|---|
+  | SSH | 22 | `0.0.0.0/0` | Deploy pelos runners do GitHub (IPs variáveis); acesso somente com a chave privada |
+  | HTTP | 80 | `0.0.0.0/0` | Acesso público à API |
+
+- Advanced details → **IAM instance profile**: `LabInstanceProfile`
+
+Em uma instância já criada, a role pode ser associada em **Actions → Security → Modify IAM role**.
+
+## 3. Preparação do servidor (uma única vez)
+
+Via SSH ou **Connect → EC2 Instance Connect**, execute o conteúdo de [`scripts/ec2-user-data.sh`](../scripts/ec2-user-data.sh):
 
 ```bash
-ssh -i devops-python-api-key.pem ec2-user@IP_PUBLICO
-docker --version
-systemctl is-active docker
-aws sts get-caller-identity   # deve mostrar a role ec2-ecr-readonly
+sudo apt-get update
+sudo apt-get install -y docker.io awscli
+sudo systemctl enable --now docker
+sudo usermod -aG docker ubuntu
 ```
 
-> Se a instância for parada e iniciada, o IP público muda. Atualize a variável `EC2_HOST` ou associe um **Elastic IP**.
+Depois de reconectar, a verificação esperada é:
 
-## 7. Secrets e variáveis no GitHub
+```bash
+docker ps                     # tabela vazia, sem erro de permissão
+aws sts get-caller-identity   # ARN contendo assumed-role/LabRole
+```
 
-No repositório: **Settings → Secrets and variables → Actions**.
+Essa preparação não faz parte do deploy: as atualizações da aplicação são feitas apenas pela pipeline.
 
-Aba **Secrets** (valores sensíveis, nunca aparecem nos logs):
+## 4. Secrets e variáveis no GitHub
+
+**Settings → Secrets and variables → Actions**, todos em nível de repositório.
+
+**Secrets**:
+
+| Nome | Origem do valor |
+|---|---|
+| `AWS_ACCESS_KEY_ID` | Learner Lab → AWS Details → AWS CLI → Show |
+| `AWS_SECRET_ACCESS_KEY` | idem |
+| `AWS_SESSION_TOKEN` | idem |
+| `EC2_SSH_KEY` | Conteúdo completo de `labsuser.pem` (Learner Lab → AWS Details → Download PEM) |
+
+**Variables**:
 
 | Nome | Valor |
 |---|---|
-| `AWS_ACCESS_KEY_ID` | Access key do usuário `github-actions-devops` |
-| `AWS_SECRET_ACCESS_KEY` | Secret key do usuário `github-actions-devops` |
-| `EC2_SSH_KEY` | Conteúdo completo do arquivo `.pem` (incluindo as linhas `-----BEGIN ...` e `-----END ...`) |
-
-Aba **Variables** (valores não sensíveis):
-
-| Nome | Exemplo |
-|---|---|
 | `AWS_REGION` | `us-east-1` |
-| `ECR_REPOSITORY` | `devops-python-api` |
-| `EC2_HOST` | IP público ou DNS público da instância |
-| `EC2_USER` | `ec2-user` |
+| `ECR_REPOSITORY` | `devops-ceub/lucas` |
+| `EC2_HOST` | IP público da `vm-deploy` |
+| `EC2_USER` | `ubuntu` |
 
-Recomendado: **Settings → Branches → Add branch ruleset** (ou *branch protection rule*) para a `main`, exigindo Pull Request e o status check **Qualidade e testes** aprovado antes do merge. Assim, um PR com teste falhando não chega à `main` e, portanto, não é implantado.
+## 5. A cada nova sessão do Learner Lab
 
-## 8. Primeiro deploy
+As credenciais da sessão expiram e a instância recebe outro IP ao ser religada. Antes de executar a pipeline:
 
-Faça o merge do Pull Request na `main` (ou rode **Actions → Deploy na EC2 → Run workflow**). Ao final:
+1. Atualizar `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` e `AWS_SESSION_TOKEN`.
+2. Atualizar `EC2_HOST` com o novo IP público.
 
-```bash
-curl http://IP_PUBLICO/health
-curl http://IP_PUBLICO/version
-```
+## 6. Problemas encontrados e soluções
 
-## 9. Limpeza ao final da avaliação
+| Erro na pipeline | Causa | Solução |
+|---|---|---|
+| `Input required and not supplied: aws-region` | Variáveis criadas em um Environment não usado pelo job | Criar as variáveis em nível de repositório |
+| `The security token included in the request is invalid` | Faltava o session token das credenciais temporárias | Adicionar `aws-session-token` ao workflow e o secret `AWS_SESSION_TOKEN` |
+| `Load key ...: error in libcrypto` | Secret salvo com outro nome (`EC2_SSH_PRIVATE_KEY`), chegando vazio | Criar o secret com o nome exato `EC2_SSH_KEY` |
+| `aws: command not found` | Ubuntu não traz o AWS CLI | Instalar `awscli` na preparação do servidor |
 
-Para evitar cobranças:
+## 7. Limpeza ao final da avaliação
 
-1. **EC2** → Terminate a instância; libere o Elastic IP, se tiver criado.
-2. **ECR** → apague o repositório `devops-python-api` (com as imagens).
-3. **IAM** → desative/apague a access key e o usuário `github-actions-devops`; apague a role e a política, se quiser.
-4. **GitHub** → remova os Secrets.
+1. **EC2** → Terminate a instância `vm-deploy`.
+2. **ECR** → apagar o repositório `devops-ceub/lucas` com as imagens.
+3. **GitHub** → remover os Secrets.
